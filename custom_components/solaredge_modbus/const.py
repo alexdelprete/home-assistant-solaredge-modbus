@@ -3,20 +3,26 @@ DEFAULT_NAME = "solaredge"
 DEFAULT_SCAN_INTERVAL = 30
 DEFAULT_PORT = 1502
 DEFAULT_MODBUS_ADDRESS = 1
+DEFAULT_POWER_CONTROL = False
 DEFAULT_READ_METER1 = False
 DEFAULT_READ_METER2 = False
 DEFAULT_READ_METER3 = False
 DEFAULT_READ_BATTERY1 = False
 DEFAULT_READ_BATTERY2 = False
+DEFAULT_READ_BATTERY3 = False
 CONF_SOLAREDGE_HUB = "solaredge_hub"
 ATTR_STATUS_DESCRIPTION = "status_description"
 ATTR_MANUFACTURER = "Solaredge"
 CONF_MODBUS_ADDRESS = "modbus_address"
+CONF_POWER_CONTROL = "power_control"
 CONF_READ_METER1 = "read_meter_1"
 CONF_READ_METER2 = "read_meter_2"
 CONF_READ_METER3 = "read_meter_3"
 CONF_READ_BATTERY1 = "read_battery_1"
 CONF_READ_BATTERY2 = "read_battery_2"
+CONF_READ_BATTERY3 = "read_battery_3"
+CONF_MAX_EXPORT_CONTROL_SITE_LIMIT = "max_export_control_site_limit"
+DEFAULT_MAX_EXPORT_CONTROL_SITE_LIMIT = 10000
 
 SENSOR_TYPES = {
     "AC_Current": ["AC Current", "accurrent", "A", "mdi:current-ac"],
@@ -266,6 +272,21 @@ BATTERY2_SENSOR_TYPES = {
     "BATTERY2_Status": ["Battery2 Status", "battery2_status", None, None],
 }
 
+BATTERY3_SENSOR_TYPES = {
+    "BATTERY3_Temp_avg": ["Battery3 Temp Average", "battery3_temp_avg", "°C", None],
+    "BATTERY3_Temp_max": ["Battery3 Temp Maximum", "battery3_temp_max", "°C", None],
+    "BATTERY3_Voltage": ["Battery3 Voltage", "battery3_voltage", "V", None],
+    "BATTERY3_Current": ["Battery3 Current", "battery3_current", "A", None],
+    "BATTERY3_Power": ["Battery3 Power", "battery3_power", "W", "mdi:battery-charging-100"],
+    "BATTERY3_Discharged": ["Battery3 Discharged", "battery3_energy_discharged", "kWh", None],
+    "BATTERY3_Charged": ["Battery3 Charged", "battery3_energy_charged", "kWh", None],
+    "BATTERY3_Size_max": ["Battery3 Size Max", "battery3_size_max", "Wh", None],
+    "BATTERY3_Size_available": ["Battery3 Size Available", "battery3_size_available", "Wh", None],
+    "BATTERY3_SOH": ["Battery3 State of Health", "battery3_state_of_health", "%", None],
+    "BATTERY3_SOC": ["Battery3 State of Charge", "battery3_state_of_charge", "%", "mdi:battery-high"],
+    "BATTERY3_Status": ["Battery3 Status", "battery3_status", None, None],
+}
+
 DEVICE_STATUSSES = {
     1: "Off",
     2: "Sleeping (auto-shutdown) – Night mode",
@@ -328,8 +349,10 @@ EXPORT_CONTROL_SELECT_TYPES = [
 ]
 
 EXPORT_CONTROL_NUMBER_TYPES = [
-    ["Export control site limit", "export_control_site_limit", 0xE002, "f", {"min": 0, "max": 10000, "unit": "W"}],
+    ["Export control site limit", "export_control_site_limit", 0xE002, "f", {"min": 0, "max": DEFAULT_MAX_EXPORT_CONTROL_SITE_LIMIT, "unit": "W"}],
 ]
+
+ACTIVE_POWER_LIMIT_TYPE = ["Active Power Limit", "nominal_active_power_limit", 0xF001, "u16", {"min": 0, "max": 100, "unit": "%"}]
 
 STORAGE_SELECT_TYPES = [
     ["Storage Control Mode", "storage_contol_mode", 0xE004, STOREDGE_CONTROL_MODE],
@@ -342,7 +365,7 @@ STORAGE_SELECT_TYPES = [
 STORAGE_NUMBER_TYPES = [
     ["Storage AC Charge Limit", "storage_ac_charge_limit", 0xE006, "f", {"min": 0, "max": 100000000000}],
     ["Storage Backup reserved", "storage_backup_reserved", 0xE008, "f", {"min": 0, "max": 100, "unit": "%"}],
-    ["Storage Remote Command Timeout", "storage_remote_command_timeout", 0xE00B, "i", {"min": 0, "max": 86400, "unit": "s"}],
+    ["Storage Remote Command Timeout", "storage_remote_command_timeout", 0xE00B, "u32", {"min": 0, "max": 86400, "unit": "s"}],
     ["Storage Remote Charge Limit", "storage_remote_charge_limit", 0xE00E, "f", {"min": 0, "max": 20000, "unit": "W"}],
     ["Storage Remote Discharge Limit", "storage_remote_discharge_limit", 0xE010, "f", {"min": 0, "max": 20000, "unit": "W"}],
 ]

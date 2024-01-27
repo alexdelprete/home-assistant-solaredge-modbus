@@ -7,7 +7,7 @@ from datetime import timedelta
 from typing import Optional
 
 import voluptuous as vol
-from pymodbus.client.sync import ModbusTcpClient
+from pymodbus.client import ModbusTcpClient
 from pymodbus.constants import Endian
 from pymodbus.payload import BinaryPayloadDecoder
 
@@ -23,22 +23,28 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_MODBUS_ADDRESS,
     CONF_MODBUS_ADDRESS,
+    CONF_POWER_CONTROL,
     CONF_READ_METER1,
     CONF_READ_METER2,
     CONF_READ_METER3,
     CONF_READ_BATTERY1,
     CONF_READ_BATTERY2,
+    CONF_READ_BATTERY3,
+    DEFAULT_POWER_CONTROL,
     DEFAULT_READ_METER1,
     DEFAULT_READ_METER2,
     DEFAULT_READ_METER3,
     DEFAULT_READ_BATTERY1,
     DEFAULT_READ_BATTERY2,
+    DEFAULT_READ_BATTERY3,
     BATTERY_STATUSSES,
     EXPORT_CONTROL_MODE,
     EXPORT_CONTROL_LIMIT_MODE,
     STOREDGE_CONTROL_MODE,
     STOREDGE_AC_CHARGE_POLICY,
-    STOREDGE_CHARGE_DISCHARGE_MODE
+    STOREDGE_CHARGE_DISCHARGE_MODE,
+    CONF_MAX_EXPORT_CONTROL_SITE_LIMIT,
+    DEFAULT_MAX_EXPORT_CONTROL_SITE_LIMIT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -48,14 +54,22 @@ SOLAREDGE_MODBUS_SCHEMA = vol.Schema(
         vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
         vol.Required(CONF_HOST): cv.string,
         vol.Required(CONF_PORT): cv.string,
-        vol.Optional(CONF_MODBUS_ADDRESS, default=DEFAULT_MODBUS_ADDRESS): cv.positive_int,
+        vol.Optional(
+            CONF_MODBUS_ADDRESS, default=DEFAULT_MODBUS_ADDRESS
+        ): cv.positive_int,
+        vol.Optional(CONF_POWER_CONTROL, default=DEFAULT_POWER_CONTROL): cv.boolean,
         vol.Optional(CONF_READ_METER1, default=DEFAULT_READ_METER1): cv.boolean,
         vol.Optional(CONF_READ_METER2, default=DEFAULT_READ_METER2): cv.boolean,
         vol.Optional(CONF_READ_METER3, default=DEFAULT_READ_METER3): cv.boolean,
         vol.Optional(CONF_READ_BATTERY1, default=DEFAULT_READ_BATTERY1): cv.boolean,
         vol.Optional(CONF_READ_BATTERY2, default=DEFAULT_READ_BATTERY2): cv.boolean,
+        vol.Optional(CONF_READ_BATTERY3, default=DEFAULT_READ_BATTERY3): cv.boolean,
         vol.Optional(
             CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
+        ): cv.positive_int,
+        vol.Optional(
+            CONF_MAX_EXPORT_CONTROL_SITE_LIMIT,
+            default=DEFAULT_MAX_EXPORT_CONTROL_SITE_LIMIT,
         ): cv.positive_int,
     }
 )
@@ -80,16 +94,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     port = entry.data[CONF_PORT]
     address = entry.data.get(CONF_MODBUS_ADDRESS, 1)
     scan_interval = entry.data[CONF_SCAN_INTERVAL]
-    read_meter1 = entry.data.get(CONF_READ_METER1, False)
-    read_meter2 = entry.data.get(CONF_READ_METER2, False)
-    read_meter3 = entry.data.get(CONF_READ_METER3, False)
-    read_battery1 = entry.data.get(CONF_READ_BATTERY1, False)
-    read_battery2 = entry.data.get(CONF_READ_BATTERY2, False)
+    power_control = entry.data.get(CONF_POWER_CONTROL, DEFAULT_POWER_CONTROL),
+    read_meter1 = entry.data.get(CONF_READ_METER1, DEFAULT_READ_METER1)
+    read_meter2 = entry.data.get(CONF_READ_METER2, DEFAULT_READ_METER2)
+    read_meter3 = entry.data.get(CONF_READ_METER3, DEFAULT_READ_METER3)
+    read_battery1 = entry.data.get(CONF_READ_BATTERY1, DEFAULT_READ_BATTERY1)
+    read_battery2 = entry.data.get(CONF_READ_BATTERY2, DEFAULT_READ_BATTERY2)
+    read_battery3 = entry.data.get(CONF_READ_BATTERY3, DEFAULT_READ_BATTERY3)
+    max_export_control_site_limit = entry.data.get(
+        CONF_MAX_EXPORT_CONTROL_SITE_LIMIT, DEFAULT_MAX_EXPORT_CONTROL_SITE_LIMIT
+    )
 
     _LOGGER.debug("Setup %s.%s", DOMAIN, name)
 
     hub = SolaredgeModbusHub(
-        hass, name, host, port, address, scan_interval, read_meter1, read_meter2, read_meter3, read_battery1, read_battery2
+        hass,
+        name,
+        host,
+        port,
+        address,
+        scan_interval,
+        power_control,
+        read_meter1,
+        read_meter2,
+        read_meter3,
+        read_battery1,
+        read_battery2,
+        read_battery3,
+        max_export_control_site_limit,
     )
     """Register the hub."""
     hass.data[DOMAIN][name] = {"hub": hub}
@@ -117,18 +149,20 @@ async def async_unload_entry(hass, entry):
     hass.data[DOMAIN].pop(entry.data["name"])
     return True
 
+
 def validate(value, comparison, against):
     ops = {
-        '>': operator.gt,
-        '<': operator.lt,
-        '>=': operator.ge,
-        '<=': operator.le,
-        '==': operator.eq,
-        '!=': operator.ne
+        ">": operator.gt,
+        "<": operator.lt,
+        ">=": operator.ge,
+        "<=": operator.le,
+        "==": operator.eq,
+        "!=": operator.ne,
     }
     if not ops[comparison](value, against):
         raise ValueError(f"Value {value} failed validation ({comparison}{against})")
     return value
+
 
 class SolaredgeModbusHub:
     """Thread safe wrapper class for pymodbus."""
@@ -141,24 +175,30 @@ class SolaredgeModbusHub:
         port,
         address,
         scan_interval,
-        read_meter1=False,
-        read_meter2=False,
-        read_meter3=False,
-        read_battery1=False,
-        read_battery2=False
+        power_control=DEFAULT_POWER_CONTROL,
+        read_meter1=DEFAULT_READ_METER1,
+        read_meter2=DEFAULT_READ_METER2,
+        read_meter3=DEFAULT_READ_METER3,
+        read_battery1=DEFAULT_READ_BATTERY1,
+        read_battery2=DEFAULT_READ_BATTERY2,
+        read_battery3=DEFAULT_READ_BATTERY3,
+        max_export_control_site_limit=DEFAULT_MAX_EXPORT_CONTROL_SITE_LIMIT
     ):
         """Initialize the Modbus hub."""
         self._hass = hass
-        self._client = ModbusTcpClient(host=host, port=port)
+        self._client = ModbusTcpClient(host=host, port=port, timeout=max(3, (scan_interval - 1)))
         self._lock = threading.Lock()
         self._name = name
         self._address = address
+        self.power_control = power_control
         self.read_meter1 = read_meter1
         self.read_meter2 = read_meter2
         self.read_meter3 = read_meter3
         self.read_battery1 = read_battery1
         self.read_battery2 = read_battery2
+        self.read_battery3 = read_battery3
         self._scan_interval = timedelta(seconds=scan_interval)
+        self.max_export_control_site_limit = max_export_control_site_limit
         self._unsub_interval_method = None
         self._sensors = []
         self.data = {}
@@ -168,7 +208,7 @@ class SolaredgeModbusHub:
         """Listen for data updates."""
         # This is the first sensor, set up interval.
         if not self._sensors:
-            self.connect()
+           # self.connect()
             self._unsub_interval_method = async_track_time_interval(
                 self._hass, self.async_refresh_modbus_data, self._scan_interval
             )
@@ -186,20 +226,31 @@ class SolaredgeModbusHub:
             self._unsub_interval_method = None
             self.close()
 
-    async def async_refresh_modbus_data(self, _now: Optional[int] = None) -> None:
+    async def async_refresh_modbus_data(self, _now: Optional[int] = None) -> dict:
+        """Time to update."""
+        result : bool = await self._hass.async_add_executor_job(self._refresh_modbus_data)
+        if result:
+            for update_callback in self._sensors:
+                update_callback()
+
+
+    def _refresh_modbus_data(self, _now: Optional[int] = None) -> bool:
         """Time to update."""
         if not self._sensors:
-            return
+            return False
+
+        if not self._check_and_reconnect():
+            #if not connected, skip
+            return False
 
         try:
             update_result = self.read_modbus_data()
         except Exception as e:
-            _LOGGER.exception("Error reading modbus data")
+            _LOGGER.exception("Error reading modbus data", exc_info=True)
             update_result = False
+        return update_result
 
-        if update_result:
-            for update_callback in self._sensors:
-                update_callback()
+
 
     @property
     def name(self):
@@ -211,10 +262,32 @@ class SolaredgeModbusHub:
         with self._lock:
             self._client.close()
 
+    def _check_and_reconnect(self):
+        if not self._client.connected:
+            _LOGGER.info("modbus client is not connected, trying to reconnect")
+            return self.connect()
+
+        return self._client.connected
+
     def connect(self):
         """Connect client."""
+        result = False
         with self._lock:
-            self._client.connect()
+            result = self._client.connect()
+
+        if result:
+            _LOGGER.info("successfully connected to %s:%s",
+                         self._client.comm_params.host, self._client.comm_params.port)
+        else:
+            _LOGGER.warning("not able to connect to %s:%s",
+                            self._client.comm_params.host, self._client.comm_params.port)
+        return result
+
+
+    @property
+    def power_control_enabled(self):
+        """Return true if power control has been enabled"""
+        return self.power_control
 
     @property
     def has_meter(self):
@@ -224,32 +297,36 @@ class SolaredgeModbusHub:
     @property
     def has_battery(self):
         """Return true if a battery is available"""
-        return self.read_battery1 or self.read_battery2
+        return self.read_battery1 or self.read_battery2 or self.read_battery3
 
     def read_holding_registers(self, unit, address, count):
         """Read holding registers."""
         with self._lock:
-            kwargs = {"unit": unit} if unit else {}
-            return self._client.read_holding_registers(address, count, **kwargs)
+            return self._client.read_holding_registers(
+                address=address, count=count, slave=unit
+            )
 
     def write_registers(self, unit, address, payload):
         """Write registers."""
         with self._lock:
-            kwargs = {"unit": unit} if unit else {}
-            return self._client.write_registers(address, payload, **kwargs)
+            return self._client.write_registers(
+                address=address, values=payload, slave=unit
+            )
 
     def calculate_value(self, value, sf):
-        return value * 10 ** sf
+        return value * 10**sf
 
     def read_modbus_data(self):
         return (
             self.read_modbus_data_inverter()
+            and self.read_modbus_power_limit()
             and self.read_modbus_data_meter1()
             and self.read_modbus_data_meter2()
             and self.read_modbus_data_meter3()
             and self.read_modbus_data_storage()
             and self.read_modbus_data_battery1()
             and self.read_modbus_data_battery2()
+            and self.read_modbus_data_battery3()
         )
 
     def read_modbus_data_meter1(self):
@@ -268,7 +345,7 @@ class SolaredgeModbusHub:
         return True
 
     def read_modbus_data_meter(self, meter_prefix, start_address):
-        """start reading meter  data """
+        """start reading meter  data"""
         meter_data = self.read_holding_registers(
             unit=self._address, address=start_address, count=103
         )
@@ -276,7 +353,7 @@ class SolaredgeModbusHub:
             return False
 
         decoder = BinaryPayloadDecoder.fromRegisters(
-            meter_data.registers, byteorder=Endian.Big
+            meter_data.registers, byteorder=Endian.BIG
         )
         accurrent = decoder.decode_16bit_int()
         accurrenta = decoder.decode_16bit_int()
@@ -313,30 +390,14 @@ class SolaredgeModbusHub:
         acvoltagebc = self.calculate_value(acvoltagebc, acvoltagesf)
         acvoltageca = self.calculate_value(acvoltageca, acvoltagesf)
 
-        self.data[meter_prefix + "acvoltageln"] = round(
-            acvoltageln, abs(acvoltagesf)
-        )
-        self.data[meter_prefix + "acvoltagean"] = round(
-            acvoltagean, abs(acvoltagesf)
-        )
-        self.data[meter_prefix + "acvoltagebn"] = round(
-            acvoltagebn, abs(acvoltagesf)
-        )
-        self.data[meter_prefix + "acvoltagecn"] = round(
-            acvoltagecn, abs(acvoltagesf)
-        )
-        self.data[meter_prefix + "acvoltagell"] = round(
-            acvoltagell, abs(acvoltagesf)
-        )
-        self.data[meter_prefix + "acvoltageab"] = round(
-            acvoltageab, abs(acvoltagesf)
-        )
-        self.data[meter_prefix + "acvoltagebc"] = round(
-            acvoltagebc, abs(acvoltagesf)
-        )
-        self.data[meter_prefix + "acvoltageca"] = round(
-            acvoltageca, abs(acvoltagesf)
-        )
+        self.data[meter_prefix + "acvoltageln"] = round(acvoltageln, abs(acvoltagesf))
+        self.data[meter_prefix + "acvoltagean"] = round(acvoltagean, abs(acvoltagesf))
+        self.data[meter_prefix + "acvoltagebn"] = round(acvoltagebn, abs(acvoltagesf))
+        self.data[meter_prefix + "acvoltagecn"] = round(acvoltagecn, abs(acvoltagesf))
+        self.data[meter_prefix + "acvoltagell"] = round(acvoltagell, abs(acvoltagesf))
+        self.data[meter_prefix + "acvoltageab"] = round(acvoltageab, abs(acvoltagesf))
+        self.data[meter_prefix + "acvoltagebc"] = round(acvoltagebc, abs(acvoltagesf))
+        self.data[meter_prefix + "acvoltageca"] = round(acvoltageca, abs(acvoltagesf))
 
         acfreq = decoder.decode_16bit_int()
         acfreqsf = decoder.decode_16bit_int()
@@ -419,11 +480,11 @@ class SolaredgeModbusHub:
         importedc = decoder.decode_32bit_uint()
         energywsf = decoder.decode_16bit_int()
 
-        exported = validate(self.calculate_value(exported, energywsf), ">=", 0)
+        exported = validate(self.calculate_value(exported, energywsf), ">", 0)
         exporteda = self.calculate_value(exporteda, energywsf)
         exportedb = self.calculate_value(exportedb, energywsf)
         exportedc = self.calculate_value(exportedc, energywsf)
-        imported = validate(self.calculate_value(imported, energywsf), ">=", 0)
+        imported = validate(self.calculate_value(imported, energywsf), ">", 0)
         importeda = self.calculate_value(importeda, energywsf)
         importedb = self.calculate_value(importedb, energywsf)
         importedc = self.calculate_value(importedc, energywsf)
@@ -457,25 +518,13 @@ class SolaredgeModbusHub:
         importedvac = self.calculate_value(importedvac, energyvasf)
 
         self.data[meter_prefix + "exportedva"] = round(exportedva, abs(energyvasf))
-        self.data[meter_prefix + "exportedvaa"] = round(
-            exportedvaa, abs(energyvasf)
-        )
-        self.data[meter_prefix + "exportedvab"] = round(
-            exportedvab, abs(energyvasf)
-        )
-        self.data[meter_prefix + "exportedvac"] = round(
-            exportedvac, abs(energyvasf)
-        )
+        self.data[meter_prefix + "exportedvaa"] = round(exportedvaa, abs(energyvasf))
+        self.data[meter_prefix + "exportedvab"] = round(exportedvab, abs(energyvasf))
+        self.data[meter_prefix + "exportedvac"] = round(exportedvac, abs(energyvasf))
         self.data[meter_prefix + "importedva"] = round(importedva, abs(energyvasf))
-        self.data[meter_prefix + "importedvaa"] = round(
-            importedvaa, abs(energyvasf)
-        )
-        self.data[meter_prefix + "importedvab"] = round(
-            importedvab, abs(energyvasf)
-        )
-        self.data[meter_prefix + "importedvac"] = round(
-            importedvac, abs(energyvasf)
-        )
+        self.data[meter_prefix + "importedvaa"] = round(importedvaa, abs(energyvasf))
+        self.data[meter_prefix + "importedvab"] = round(importedvab, abs(energyvasf))
+        self.data[meter_prefix + "importedvac"] = round(importedvac, abs(energyvasf))
 
         importvarhq1 = decoder.decode_32bit_uint()
         importvarhq1a = decoder.decode_32bit_uint()
@@ -512,9 +561,7 @@ class SolaredgeModbusHub:
         importvarhq4b = self.calculate_value(importvarhq4b, energyvarsf)
         importvarhq4c = self.calculate_value(importvarhq4c, energyvarsf)
 
-        self.data[meter_prefix + "importvarhq1"] = round(
-            importvarhq1, abs(energyvarsf)
-        )
+        self.data[meter_prefix + "importvarhq1"] = round(importvarhq1, abs(energyvarsf))
         self.data[meter_prefix + "importvarhq1a"] = round(
             importvarhq1a, abs(energyvarsf)
         )
@@ -524,9 +571,7 @@ class SolaredgeModbusHub:
         self.data[meter_prefix + "importvarhq1c"] = round(
             importvarhq1c, abs(energyvarsf)
         )
-        self.data[meter_prefix + "importvarhq2"] = round(
-            importvarhq2, abs(energyvarsf)
-        )
+        self.data[meter_prefix + "importvarhq2"] = round(importvarhq2, abs(energyvarsf))
         self.data[meter_prefix + "importvarhq2a"] = round(
             importvarhq2a, abs(energyvarsf)
         )
@@ -536,9 +581,7 @@ class SolaredgeModbusHub:
         self.data[meter_prefix + "importvarhq2c"] = round(
             importvarhq2c, abs(energyvarsf)
         )
-        self.data[meter_prefix + "importvarhq3"] = round(
-            importvarhq3, abs(energyvarsf)
-        )
+        self.data[meter_prefix + "importvarhq3"] = round(importvarhq3, abs(energyvarsf))
         self.data[meter_prefix + "importvarhq3a"] = round(
             importvarhq3a, abs(energyvarsf)
         )
@@ -548,9 +591,7 @@ class SolaredgeModbusHub:
         self.data[meter_prefix + "importvarhq3c"] = round(
             importvarhq3c, abs(energyvarsf)
         )
-        self.data[meter_prefix + "importvarhq4"] = round(
-            importvarhq4, abs(energyvarsf)
-        )
+        self.data[meter_prefix + "importvarhq4"] = round(importvarhq4, abs(energyvarsf))
         self.data[meter_prefix + "importvarhq4a"] = round(
             importvarhq4a, abs(energyvarsf)
         )
@@ -564,12 +605,14 @@ class SolaredgeModbusHub:
         return True
 
     def read_modbus_data_inverter(self):
-        inverter_data = self.read_holding_registers(unit=self._address, address=40071, count=38)
+        inverter_data = self.read_holding_registers(
+            unit=self._address, address=40071, count=38
+        )
         if inverter_data.isError():
             return False
 
         decoder = BinaryPayloadDecoder.fromRegisters(
-            inverter_data.registers, byteorder=Endian.Big
+            inverter_data.registers, byteorder=Endian.BIG
         )
         accurrent = decoder.decode_16bit_uint()
         accurrenta = decoder.decode_16bit_uint()
@@ -641,7 +684,7 @@ class SolaredgeModbusHub:
 
         acenergy = decoder.decode_32bit_uint()
         acenergysf = decoder.decode_16bit_uint()
-        acenergy = validate(self.calculate_value(acenergy, acenergysf), ">=", 0)
+        acenergy = validate(self.calculate_value(acenergy, acenergysf), ">", 0)
 
         self.data["acenergy"] = round(acenergy * 0.001, 3)
 
@@ -683,83 +726,131 @@ class SolaredgeModbusHub:
 
         return True
 
+    def read_modbus_power_limit(self):
+        """
+        Read the active power limit value (%)
+        """
+
+        if not self.power_control_enabled:
+            return True
+
+        inverter_data = self.read_holding_registers(
+            unit=self._address, address=0xF001, count=1
+        )
+        if inverter_data.isError():
+            _LOGGER.debug("Could not read Active Power Limit")
+            # Don't stop reading other data, could just be advanced power management not enabled
+            return True
+
+        decoder = BinaryPayloadDecoder.fromRegisters(
+            inverter_data.registers, byteorder=Endian.BIG, wordorder=Endian.LITTLE
+        )
+        # 0xF001 - 1 - Active Power Limit
+        self.data["nominal_active_power_limit"] = decoder.decode_16bit_uint()
+
+        return True
+
     def read_modbus_data_storage(self):
         if self.has_battery:
-            count = 0x12 # Read storedge block as well
+            count = 0x12  # Read storedge block as well
         elif self.has_meter:
-            count = 4 # Just read export control block
+            count = 4  # Just read export control block
         else:
-            return True # Nothing to read here
+            return True  # Nothing to read here
 
-        storage_data = self.read_holding_registers(unit=self._address, address=0xE000, count=count)
+        storage_data = self.read_holding_registers(
+            unit=self._address, address=0xE000, count=count
+        )
         if not storage_data.isError():
             decoder = BinaryPayloadDecoder.fromRegisters(
-                storage_data.registers, byteorder=Endian.Big,wordorder=Endian.Little
+                storage_data.registers, byteorder=Endian.BIG, wordorder=Endian.LITTLE
             )
 
-            #0xE000 - 1 - Export control mode
+            # 0xE000 - 1 - Export control mode
             export_control_mode = decoder.decode_16bit_uint() & 7
             if export_control_mode in EXPORT_CONTROL_MODE:
-                self.data["export_control_mode"] = EXPORT_CONTROL_MODE[export_control_mode]
+                self.data["export_control_mode"] = EXPORT_CONTROL_MODE[
+                    export_control_mode
+                ]
             else:
                 self.data["export_control_mode"] = export_control_mode
 
-            #0xE001 - 1 - Export control limit mode
+            # 0xE001 - 1 - Export control limit mode
             export_control_limit_mode = decoder.decode_16bit_uint() & 1
             if export_control_limit_mode in EXPORT_CONTROL_MODE:
-                self.data["export_control_limit_mode"] = EXPORT_CONTROL_LIMIT_MODE[export_control_limit_mode]
+                self.data["export_control_limit_mode"] = EXPORT_CONTROL_LIMIT_MODE[
+                    export_control_limit_mode
+                ]
             else:
                 self.data["export_control_limit_mode"] = export_control_limit_mode
 
-            #0xE002 - 2 - Export control site limit
-            self.data["export_control_site_limit"] = round(decoder.decode_32bit_float(), 3)
+            # 0xE002 - 2 - Export control site limit
+            self.data["export_control_site_limit"] = round(
+                decoder.decode_32bit_float(), 3
+            )
 
             if not self.has_battery:
                 # Done with the export control block
                 return True
 
-            #0xE004 - 1 - storage control mode
+            # 0xE004 - 1 - storage control mode
             storage_control_mode = decoder.decode_16bit_uint()
             if storage_control_mode in STOREDGE_CONTROL_MODE:
-                self.data["storage_contol_mode"] = STOREDGE_CONTROL_MODE[storage_control_mode]
+                self.data["storage_contol_mode"] = STOREDGE_CONTROL_MODE[
+                    storage_control_mode
+                ]
             else:
                 self.data["storage_contol_mode"] = storage_control_mode
 
-            #0xE005 - 1 - storage ac charge policy
+            # 0xE005 - 1 - storage ac charge policy
             storage_ac_charge_policy = decoder.decode_16bit_uint()
             if storage_ac_charge_policy in STOREDGE_AC_CHARGE_POLICY:
-                self.data["storage_ac_charge_policy"] = STOREDGE_AC_CHARGE_POLICY[storage_ac_charge_policy]
+                self.data["storage_ac_charge_policy"] = STOREDGE_AC_CHARGE_POLICY[
+                    storage_ac_charge_policy
+                ]
             else:
                 self.data["storage_ac_charge_policy"] = storage_ac_charge_policy
 
-            #0xE006 - 2 - storage AC charge limit (kWh or %)
-            self.data["storage_ac_charge_limit"] = round(decoder.decode_32bit_float(), 3)
+            # 0xE006 - 2 - storage AC charge limit (kWh or %)
+            self.data["storage_ac_charge_limit"] = round(
+                decoder.decode_32bit_float(), 3
+            )
 
-            #0xE008 - 2 - storage backup reserved capacity (%)
-            self.data["storage_backup_reserved"] = round(decoder.decode_32bit_float(), 3)
+            # 0xE008 - 2 - storage backup reserved capacity (%)
+            self.data["storage_backup_reserved"] = round(
+                decoder.decode_32bit_float(), 3
+            )
 
-            #0xE00A - 1 - storage charge / discharge default mode
+            # 0xE00A - 1 - storage charge / discharge default mode
             storage_default_mode = decoder.decode_16bit_uint()
             if storage_default_mode in STOREDGE_CHARGE_DISCHARGE_MODE:
-                self.data["storage_default_mode"] = STOREDGE_CHARGE_DISCHARGE_MODE[storage_default_mode]
+                self.data["storage_default_mode"] = STOREDGE_CHARGE_DISCHARGE_MODE[
+                    storage_default_mode
+                ]
             else:
                 self.data["storage_default_mode"] = storage_default_mode
 
-            #0xE00B - 2- storage remote command timeout (seconds)
+            # 0xE00B - 2- storage remote command timeout (seconds)
             self.data["storage_remote_command_timeout"] = decoder.decode_32bit_uint()
 
-            #0xE00D - 1 - storage remote command mode
+            # 0xE00D - 1 - storage remote command mode
             storage_remote_command_mode = decoder.decode_16bit_uint()
             if storage_remote_command_mode in STOREDGE_CHARGE_DISCHARGE_MODE:
-                self.data["storage_remote_command_mode"] = STOREDGE_CHARGE_DISCHARGE_MODE[storage_remote_command_mode]
+                self.data[
+                    "storage_remote_command_mode"
+                ] = STOREDGE_CHARGE_DISCHARGE_MODE[storage_remote_command_mode]
             else:
                 self.data["storage_remote_command_mode"] = storage_remote_command_mode
 
-            #0xE00E - 2- storate remote charge limit
-            self.data["storage_remote_charge_limit"] = round(decoder.decode_32bit_float(), 3)
+            # 0xE00E - 2- storate remote charge limit
+            self.data["storage_remote_charge_limit"] = round(
+                decoder.decode_32bit_float(), 3
+            )
 
-            #0xE010 - 2- storate remote discharge limit
-            self.data["storage_remote_discharge_limit"] = round(decoder.decode_32bit_float(), 3)
+            # 0xE010 - 2- storate remote discharge limit
+            self.data["storage_remote_discharge_limit"] = round(
+                decoder.decode_32bit_float(), 3
+            )
 
         return True
 
@@ -772,111 +863,130 @@ class SolaredgeModbusHub:
         if self.read_battery2:
             return self.read_modbus_data_battery("battery2_", 0xE200)
         return True
-
+        
+    def read_modbus_data_battery3(self):
+        if self.read_battery3:
+            return self.read_modbus_data_battery("battery3_", 0xE400)
+        return True
+        
     def read_modbus_data_battery(self, battery_prefix, start_address):
         if not battery_prefix + "attrs" in self.data:
-            battery_data = self.read_holding_registers(unit=self._address, address=start_address, count=0x4C)
+            battery_data = self.read_holding_registers(
+                unit=self._address, address=start_address, count=0x4C
+            )
             if not battery_data.isError():
                 decoder = BinaryPayloadDecoder.fromRegisters(
-                    battery_data.registers, byteorder=Endian.Big,wordorder=Endian.Little
+                    battery_data.registers,
+                    byteorder=Endian.BIG,
+                    wordorder=Endian.LITTLE,
                 )
 
                 def decode_string(decoder):
-                    s = decoder.decode_string(32) # get 32 char string
-                    s = s.partition(b'\0')[0] # omit NULL terminators
-                    s = s.decode("utf-8") # decode UTF-8
+                    s = decoder.decode_string(32)  # get 32 char string
+                    s = s.partition(b"\0")[0]  # omit NULL terminators
+                    s = s.decode("utf-8")  # decode UTF-8
                     return str(s)
 
                 battery_info = {}
-                #0x00 - 16 - manufacturer
+                # 0x00 - 16 - manufacturer
                 battery_info["manufacturer"] = decode_string(decoder)
 
-                #0x10 - 16 - model
+                # 0x10 - 16 - model
                 battery_info["model"] = decode_string(decoder)
 
-                #0x20 - 16 - firmware version
+                # 0x20 - 16 - firmware version
                 battery_info["firmware_version"] = decode_string(decoder)
 
-                #0x30 - 16 - serial number
+                # 0x30 - 16 - serial number
                 battery_info["serial_number"] = decode_string(decoder)
 
-                #0x40 - 1 - device ID
+                # 0x40 - 1 - device ID
                 battery_info["device_id"] = decoder.decode_16bit_uint()
 
-                #0x41 - 1 - reserved
+                # 0x41 - 1 - reserved
                 decoder.decode_16bit_uint()
 
-                #0x42 - 2 - rated energy
+                # 0x42 - 2 - rated energy
                 battery_info["rated_energy"] = decoder.decode_32bit_float()
 
-                #0x44 - 2 - max charge continuous power
-                battery_info["max_power_continuous_charge"] = decoder.decode_32bit_float()
+                # 0x44 - 2 - max charge continuous power
+                battery_info[
+                    "max_power_continuous_charge"
+                ] = decoder.decode_32bit_float()
 
-                #0x46 - 2 - max discharge continuous power
-                battery_info["max_power_continuous_discharge"] = decoder.decode_32bit_float()
+                # 0x46 - 2 - max discharge continuous power
+                battery_info[
+                    "max_power_continuous_discharge"
+                ] = decoder.decode_32bit_float()
 
-                #0x48 - 2 - max charge peak power
-                battery_info["max_power_peak_charge"] = decoder.decode_32bit_float()#
+                # 0x48 - 2 - max charge peak power
+                battery_info["max_power_peak_charge"] = decoder.decode_32bit_float()  #
 
-                #0x4A - 2 - max discharge peak power
+                # 0x4A - 2 - max discharge peak power
                 battery_info["max_power_peak_discharge"] = decoder.decode_32bit_float()
 
                 self.data[battery_prefix + "attrs"] = battery_info
 
-        storage_data = self.read_holding_registers(unit=self._address, address=start_address + 0x6C, count=28)
+        storage_data = self.read_holding_registers(
+            unit=self._address, address=start_address + 0x6C, count=28
+        )
         if storage_data.isError():
             return False
 
         decoder = BinaryPayloadDecoder.fromRegisters(
-            storage_data.registers, byteorder=Endian.Big,wordorder=Endian.Little
+            storage_data.registers, byteorder=Endian.BIG, wordorder=Endian.LITTLE
         )
 
-        #0x6C - 2 - avg temp C
+        # 0x6C - 2 - avg temp C
         tempavg = decoder.decode_32bit_float()
-        #0x6E - 2 - max temp C
+        # 0x6E - 2 - max temp C
         tempmax = decoder.decode_32bit_float()
-        #0x70 - 2 - inst voltage V
+        # 0x70 - 2 - inst voltage V
         batteryvoltage = decoder.decode_32bit_float()
-        #0x72 - 2 - inst current A
+        # 0x72 - 2 - inst current A
         batterycurrent = decoder.decode_32bit_float()
-        #0x74 - 2 - inst power W
+        # 0x74 - 2 - inst power W
         batterypower = decoder.decode_32bit_float()
-        #0x76 - 4 - cumulative discharged (Wh)
+        # 0x76 - 4 - cumulative discharged (Wh)
         cumulative_discharged = decoder.decode_64bit_uint()
-        #0x7a - 4 - cumulative charged (Wh)
+        # 0x7a - 4 - cumulative charged (Wh)
         cumulative_charged = decoder.decode_64bit_uint()
-        #0x7E - 2 - current max size Wh
+        # 0x7E - 2 - current max size Wh
         battery_max = decoder.decode_32bit_float()
-        #0x80 - 2 - available size Wh
+        # 0x80 - 2 - available size Wh
         battery_availbable = decoder.decode_32bit_float()
-        #0x82 - 2 - SoH %
+        # 0x82 - 2 - SoH %
         battery_SoH = decoder.decode_32bit_float()
-        #0x84 - 2 - SoC %
+        # 0x84 - 2 - SoC %
         battery_SoC = validate(decoder.decode_32bit_float(), ">=", 0.0)
         battery_SoC = validate(battery_SoC, "<", 101)
 
-        self.data[battery_prefix + 'temp_avg'] = round(tempavg, 1)
-        self.data[battery_prefix + 'temp_max'] = round(tempmax, 1)
-        self.data[battery_prefix + 'voltage'] = round(batteryvoltage, 3)
-        self.data[battery_prefix + 'current'] = round(batterycurrent, 3)
-        self.data[battery_prefix + 'power'] = round(batterypower, 3)
-        self.data[battery_prefix + 'energy_discharged'] = round(cumulative_discharged / 1000, 3)
-        self.data[battery_prefix + 'energy_charged'] = round(cumulative_charged / 1000, 3)
-        self.data[battery_prefix + 'size_max'] = round(battery_max, 3)
-        self.data[battery_prefix + 'size_available'] = round(battery_availbable, 3)
-        self.data[battery_prefix + 'state_of_health'] = round(battery_SoH, 0)
-        self.data[battery_prefix + 'state_of_charge'] = round(battery_SoC, 0)
+        self.data[battery_prefix + "temp_avg"] = round(tempavg, 1)
+        self.data[battery_prefix + "temp_max"] = round(tempmax, 1)
+        self.data[battery_prefix + "voltage"] = round(batteryvoltage, 3)
+        self.data[battery_prefix + "current"] = round(batterycurrent, 3)
+        self.data[battery_prefix + "power"] = round(batterypower, 3)
+        self.data[battery_prefix + "energy_discharged"] = round(
+            cumulative_discharged / 1000, 3
+        )
+        self.data[battery_prefix + "energy_charged"] = round(
+            cumulative_charged / 1000, 3
+        )
+        self.data[battery_prefix + "size_max"] = round(battery_max, 3)
+        self.data[battery_prefix + "size_available"] = round(battery_availbable, 3)
+        self.data[battery_prefix + "state_of_health"] = round(battery_SoH, 0)
+        self.data[battery_prefix + "state_of_charge"] = round(battery_SoC, 0)
         battery_status = decoder.decode_32bit_uint()
 
         # voltage and current are bogus in certain statuses
-        if not battery_status in [3,4,6]:
-            self.data[battery_prefix + 'voltage'] = 0
-            self.data[battery_prefix + 'current'] = 0
-            self.data[battery_prefix + 'power'] = 0
+        if not battery_status in [3, 4, 6]:
+            self.data[battery_prefix + "voltage"] = 0
+            self.data[battery_prefix + "current"] = 0
+            self.data[battery_prefix + "power"] = 0
 
         if battery_status in BATTERY_STATUSSES:
-            self.data[battery_prefix + 'status'] = BATTERY_STATUSSES[battery_status]
+            self.data[battery_prefix + "status"] = BATTERY_STATUSSES[battery_status]
         else:
-            self.data[battery_prefix + 'status'] = battery_status
+            self.data[battery_prefix + "status"] = battery_status
 
         return True
